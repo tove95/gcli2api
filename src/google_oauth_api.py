@@ -14,6 +14,7 @@ from config import (
     get_oauth_proxy_url,
     get_resource_manager_api_url,
     get_service_usage_api_url,
+    get_antigravity_api_url,
 )
 from log import log
 
@@ -514,6 +515,7 @@ async def select_default_project(projects: List[Dict[str, Any]]) -> Optional[str
     # 策略1：查找显示名称或项目ID包含"default"的项目
     for project in projects:
         display_name = project.get("displayName", "").lower()
+        # Google API returns projectId in camelCase
         project_id = project.get("projectId", "")
         if "default" in display_name or "default" in project_id.lower():
             log.info(f"选择默认项目: {project_id} ({project.get('displayName', project_id)})")
@@ -521,8 +523,77 @@ async def select_default_project(projects: List[Dict[str, Any]]) -> Optional[str
 
     # 策略2：选择第一个项目
     first_project = projects[0]
+    # Google API returns projectId in camelCase
     project_id = first_project.get("projectId", "")
     log.info(
         f"选择第一个项目作为默认: {project_id} ({first_project.get('displayName', project_id)})"
     )
     return project_id
+
+
+async def fetch_project_id(
+    access_token: str,
+    user_agent: str
+) -> Optional[str]:
+    """
+    从 API 获取 project_id
+
+    Args:
+        access_token: Google OAuth access token
+        user_agent: User-Agent header
+
+    Returns:
+        project_id 字符串，如果获取失败返回 None
+    """
+    headers = {
+        'User-Agent': user_agent,
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Accept-Encoding': 'gzip'
+    }
+
+    try:
+        antigravity_url = await get_antigravity_api_url()
+        request_url = f"{antigravity_url}/v1internal:loadCodeAssist"
+        request_body = {"metadata": {"ideType": "ANTIGRAVITY"}}
+
+        log.debug(f"[fetch_project_id] Fetching project_id from: {request_url}")
+        log.debug(f"[fetch_project_id] Request body: {request_body}")
+        log.debug(f"[fetch_project_id] Request headers: {dict(headers)}")
+
+        response = await post_async(
+            request_url,
+            json=request_body,
+            headers=headers,
+            timeout=30.0,
+        )
+
+        log.debug(f"[fetch_project_id] Response status: {response.status_code}")
+
+        if response.status_code == 200:
+            response_text = response.text
+            log.debug(f"[fetch_project_id] Response body (complete): {response_text}")
+
+            data = response.json()
+            log.debug(f"[fetch_project_id] Response JSON keys: {list(data.keys())}")
+            log.debug(f"[fetch_project_id] Full response data: {data}")
+
+            project_id = data.get("cloudaicompanionProject")
+            if project_id:
+                log.info(f"[fetch_project_id] Successfully fetched project_id: {project_id}")
+                return project_id
+            else:
+                log.warning("[fetch_project_id] loadCodeAssist returned no 'cloudaicompanionProject' field")
+                log.warning(f"[fetch_project_id] Full response data: {data}")
+                log.warning("[fetch_project_id] This may indicate: account has no quota, or API configuration issue")
+                return None
+        else:
+            log.warning(f"[fetch_project_id] Failed to fetch project_id: HTTP {response.status_code}")
+            log.warning(f"[fetch_project_id] Response body: {response.text[:500]}")
+            return None
+
+    except Exception as e:
+        log.error(f"[fetch_project_id] Error fetching project_id: {type(e).__name__}: {e}")
+        import traceback
+        log.debug(f"[fetch_project_id] Traceback: {traceback.format_exc()}")
+        return None
