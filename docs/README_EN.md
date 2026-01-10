@@ -1,8 +1,7 @@
 # GeminiCLI to API
 
-**Convert GeminiCLI to OpenAI and GEMINI API interfaces**
+**Convert GeminiCLI and Antigravity to OpenAI, GEMINI, and Claude API Compatible Interfaces**
 
-[![CI](https://github.com/su-kaka/gcli2api/workflows/CI/badge.svg)](https://github.com/su-kaka/gcli2api/actions)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: CNC-1.0](https://img.shields.io/badge/License-CNC--1.0-red.svg)](../LICENSE)
 [![Docker](https://img.shields.io/badge/docker-available-blue.svg)](https://github.com/su-kaka/gcli2api/pkgs/container/gcli2api)
@@ -39,7 +38,7 @@ This is a strict anti-commercial open source license. Please refer to the [LICEN
 
 ### 🔄 API Endpoints and Format Support
 
-**Multi-endpoint Dual Format Support**
+**Multi-endpoint Multi-format Support**
 - **OpenAI Compatible Endpoints**: `/v1/chat/completions` and `/v1/models`
   - Supports standard OpenAI format (messages structure)
   - Supports Gemini native format (contents structure)
@@ -48,6 +47,17 @@ This is a strict anti-commercial open source license. Please refer to the [LICEN
 - **Gemini Native Endpoints**: `/v1/models/{model}:generateContent` and `streamGenerateContent`
   - Supports complete Gemini native API specifications
   - Multiple authentication methods: Bearer Token, x-goog-api-key header, URL parameter key
+- **Claude Format Compatibility**: Full support for Claude API format
+  - Endpoint: `/v1/messages` (follows Claude API specification)
+  - Supports Claude standard messages format
+  - Supports system parameter and Claude-specific features
+  - Automatically converts to backend-supported format
+- **Antigravity API Support**: Supports OpenAI, Gemini, and Claude formats
+  - OpenAI format endpoint: `/antigravity/v1/chat/completions`
+  - Gemini format endpoint: `/antigravity/v1/models/{model}:generateContent` and `streamGenerateContent`
+  - Claude format endpoint: `/antigravity/v1/messages`
+  - Supports all Antigravity models (Claude, Gemini, etc.)
+  - Automatic model name mapping and thinking mode detection
 
 ### 🔐 Authentication and Security Management
 
@@ -92,7 +102,7 @@ This is a strict anti-commercial open source license. Please refer to the [LICEN
 ### 🎛️ Web Management Console
 
 **Full-featured Web Interface**
-- OAuth authentication flow management
+- OAuth authentication flow management (supports GCLI and Antigravity dual modes)
 - Credential file upload, download, and management
 - Real-time log viewing (WebSocket)
 - System configuration management
@@ -100,10 +110,11 @@ This is a strict anti-commercial open source license. Please refer to the [LICEN
 - Mobile-friendly interface
 
 **Batch Operation Support**
-- ZIP file batch credential upload
+- ZIP file batch credential upload (GCLI and Antigravity)
 - Batch enable/disable/delete credentials
 - Batch user email retrieval
 - Batch configuration management
+- Unified batch upload interface for all credential types
 
 ### 📈 Usage Statistics and Monitoring
 
@@ -281,6 +292,8 @@ docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PA
 
 1. Visit `http://127.0.0.1:7861/auth` (default port, modifiable via PORT environment variable)
 2. Complete OAuth authentication flow (default password: `pwd`, modifiable via environment variables)
+   - **GCLI Mode**: For obtaining Google Cloud Gemini API credentials
+   - **Antigravity Mode**: For obtaining Google Antigravity API credentials
 3. Configure client:
 
 **OpenAI Compatible Client:**
@@ -291,66 +304,47 @@ docker run -d --name gcli2api --network host -e API_PASSWORD=api_pwd -e PANEL_PA
    - **Endpoint Address**: `http://127.0.0.1:7861`
    - **Authentication Methods**:
      - `Authorization: Bearer your_api_password`
-     - `x-goog-api-key: your_api_password` 
+     - `x-goog-api-key: your_api_password`
      - URL parameter: `?key=your_api_password`
 
-## 💾 Distributed Storage Mode
+### 🌟 Dual Authentication Mode Support
 
-### 🌟 Storage Backend Priority
+**GCLI Authentication Mode**
+- Standard Google Cloud Gemini API authentication
+- Supports OAuth2.0 authentication flow
+- Automatically enables required Google Cloud APIs
 
-gcli2api supports multiple storage backends, automatically selecting by priority: **Redis > Postgres > MongoDB > Local Files**
+**Antigravity Authentication Mode**
+- Dedicated authentication for Google Antigravity API
+- Independent credential management system
+- Supports batch upload and management
+- Completely isolated from GCLI credentials
 
-### ⚡ Redis Distributed Storage Mode
+**Unified Management Interface**
+- Manage both credential types in the "Batch Upload" tab
+- Upper section: GCLI credential batch upload (blue theme)
+- Lower section: Antigravity credential batch upload (green theme)
+- Separate credential management tabs for each type
 
-### ⚙️ Enable Redis Mode
+## 💾 Data Storage Mode
 
-**Step 1: Configure Redis Connection**
-```bash
-# Local Redis
-export REDIS_URI="redis://localhost:6379"
+### 🌟 Storage Backend Support
 
-# Redis with password
-export REDIS_URI="redis://:password@localhost:6379"
+gcli2api supports two storage backends: **Local SQLite (Default)** and **MongoDB (Cloud Distributed Storage)**
 
-# SSL connection (recommended for production)
-export REDIS_URI="rediss://default:password@host:6380"
+### 📁 Local SQLite Storage (Default)
 
-# Upstash Redis (free cloud service)
-export REDIS_URI="rediss://default:token@your-host.upstash.io:6379"
+**Default Storage Method**
+- No configuration required, works out of the box
+- Data is stored in a local SQLite database
+- Suitable for single-machine deployment and personal use
+- Automatically creates and manages database files
 
-# Optional: Custom database index (default: 0)
-export REDIS_DATABASE="1"
-```
+### 🍃 MongoDB Cloud Storage Mode
 
-**Step 2: Start Application**
-```bash
-# Application will automatically detect Redis configuration and prioritize Redis storage
-python web.py
-```
+**Cloud Distributed Storage Solution**
 
-### 🐘 Postgres Distributed Storage Mode
-
-If Redis is not configured, or you prefer a relational database, gcli2api also supports Postgres (it is checked after Redis and before MongoDB).
-
-⚙️ Enable Postgres Mode
-
-Step 1: Configure Postgres DSN
-```bash
-# Example DSN:
-export POSTGRES_DSN="postgresql://user:password@localhost:5432/gcli2api"
-```
-
-Step 2: Start Application
-```bash
-# Application will detect POSTGRES_DSN and use Postgres when Redis is not available
-python web.py
-```
-
-### 🍃 MongoDB Distributed Storage Mode
-
-### 🌟 Alternative Storage Solution
-
-If Redis is not configured, gcli2api will attempt to use **MongoDB storage mode**.
+When multi-instance deployment or cloud storage is needed, MongoDB storage mode can be enabled.
 
 ### ⚙️ Enable MongoDB Mode
 
@@ -459,7 +453,7 @@ asyncio.run(test())
 # If migration is interrupted, re-run
 python mongodb_setup.py migrate
 
-# To rollback to file mode, remove MONGODB_URI environment variable
+# To rollback to local SQLite mode, remove MONGODB_URI environment variable
 unset MONGODB_URI
 # Then export data from MongoDB
 python mongodb_setup.py export
@@ -570,48 +564,22 @@ export MONGODB_URI="mongodb://localhost:27017/gcli2api?readPreference=secondaryP
 - `LOG_LEVEL`: Log level (DEBUG/INFO/WARNING/ERROR, default: INFO)
 - `LOG_FILE`: Log file path (default: gcli2api.log)
 
-**Storage Configuration (by priority)**
+**Storage Configuration**
 
-**Redis Configuration (Highest Priority)**
-- `REDIS_URI`: Redis connection string (enables Redis mode when set)
-  - Local: `redis://localhost:6379`
-  - With password: `redis://:password@host:6379`
-  - SSL: `rediss://default:password@host:6380`
-- `REDIS_DATABASE`: Redis database index (0-15, default: 0)
+**SQLite Configuration (Default)**
+- No configuration required, automatically uses local SQLite database
+- Database files are automatically created in the project directory
 
-**MongoDB Configuration (Second Priority)**
+**MongoDB Configuration (Optional Cloud Storage)**
 - `MONGODB_URI`: MongoDB connection string (enables MongoDB mode when set)
 - `MONGODB_DATABASE`: MongoDB database name (default: gcli2api)
-
-**Credential Configuration**
-
-Support importing multiple credentials using `GCLI_CREDS_*` environment variables:
-
-#### Credential Environment Variable Usage Examples
-
-**Method 1: Numbered Format**
-```bash
-export GCLI_CREDS_1='{"client_id":"your-client-id","client_secret":"your-secret","refresh_token":"your-token","token_uri":"https://oauth2.googleapis.com/token","project_id":"your-project"}'
-export GCLI_CREDS_2='{"client_id":"...","project_id":"..."}'
-```
-
-**Method 2: Project Name Format**
-```bash
-export GCLI_CREDS_myproject='{"client_id":"...","project_id":"myproject",...}'
-export GCLI_CREDS_project2='{"client_id":"...","project_id":"project2",...}'
-```
-
-**Enable Automatic Loading**
-```bash
-export AUTO_LOAD_ENV_CREDS=true  # Automatically import environment variable credentials at program startup
-```
 
 **Docker Usage Example**
 ```bash
 # Using universal password
 docker run -d --name gcli2api \
   -e PASSWORD=mypassword \
-  -e PORT=8080 \
+  -e PORT=11451 \
   -e GOOGLE_CREDENTIALS="$(cat credential.json | base64 -w 0)" \
   ghcr.io/su-kaka/gcli2api:latest
 
@@ -619,7 +587,7 @@ docker run -d --name gcli2api \
 docker run -d --name gcli2api \
   -e API_PASSWORD=my_api_password \
   -e PANEL_PASSWORD=my_panel_password \
-  -e PORT=8080 \
+  -e PORT=11451 \
   -e GOOGLE_CREDENTIALS="$(cat credential.json | base64 -w 0)" \
   ghcr.io/su-kaka/gcli2api:latest
 ```
@@ -628,9 +596,9 @@ Note: When credential environment variables are set, the system will prioritize 
 
 ### API Usage Methods
 
-This service supports two complete sets of API endpoints:
+This service supports multiple complete sets of API endpoints:
 
-#### 1. OpenAI Compatible Endpoints
+#### 1. OpenAI Compatible Endpoints (GCLI)
 
 **Endpoint:** `/v1/chat/completions`  
 **Authentication:** `Authorization: Bearer your_api_password`
@@ -664,7 +632,7 @@ Supports two request formats with automatic detection and processing:
 }
 ```
 
-#### 2. Gemini Native Endpoints
+#### 2. Gemini Native Endpoints (GCLI)
 
 **Non-streaming Endpoint:** `/v1/models/{model}:generateContent`  
 **Streaming Endpoint:** `/v1/models/{model}:streamGenerateContent`  
@@ -697,10 +665,170 @@ curl -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-pro:streamGenerateConte
   }'
 ```
 
+#### 3. Claude API Format Endpoints
+
+**Endpoint:** `/v1/messages`
+**Authentication:** `x-api-key: your_api_password` or `Authorization: Bearer your_api_password`
+
+**Request Example:**
+```bash
+curl -X POST "http://127.0.0.1:7861/v1/messages" \
+  -H "x-api-key: your_api_password" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-pro",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello, Claude!"}
+    ]
+  }'
+```
+
+**Support for system parameter:**
+```json
+{
+  "model": "gemini-2.5-pro",
+  "max_tokens": 1024,
+  "system": "You are a helpful assistant",
+  "messages": [
+    {"role": "user", "content": "Hello"}
+  ]
+}
+```
+
+**Notes:**
+- Fully compatible with Claude API format specification
+- Automatically converts to Gemini format for backend calls
+- Supports all Claude standard parameters
+- Response format follows Claude API specification
+
+#### 4. Antigravity API Endpoints
+
+**Supports three formats: OpenAI, Gemini, and Claude**
+
+##### Antigravity OpenAI Format Endpoints
+
+**Endpoint:** `/antigravity/v1/chat/completions`
+**Authentication:** `Authorization: Bearer your_api_password`
+
+**Request Example:**
+```bash
+curl -X POST "http://127.0.0.1:7861/antigravity/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_password" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "messages": [
+      {"role": "user", "content": "Hello"}
+    ],
+    "stream": true
+  }'
+```
+
+##### Antigravity Gemini Format Endpoints
+
+**Non-streaming Endpoint:** `/antigravity/v1/models/{model}:generateContent`
+**Streaming Endpoint:** `/antigravity/v1/models/{model}:streamGenerateContent`
+
+**Authentication Methods (choose one):**
+- `Authorization: Bearer your_api_password`
+- `x-goog-api-key: your_api_password`
+- URL parameter: `?key=your_api_password`
+
+**Request Examples:**
+```bash
+# Gemini format non-streaming request
+curl -X POST "http://127.0.0.1:7861/antigravity/v1/models/claude-sonnet-4-5:generateContent" \
+  -H "x-goog-api-key: your_api_password" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {"role": "user", "parts": [{"text": "Hello"}]}
+    ],
+    "generationConfig": {
+      "temperature": 0.7
+    }
+  }'
+
+# Gemini format streaming request
+curl -X POST "http://127.0.0.1:7861/antigravity/v1/models/gemini-2.5-flash:streamGenerateContent?key=your_api_password" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {"role": "user", "parts": [{"text": "Hello"}]}
+    ]
+  }'
+```
+
+##### Antigravity Claude Format Endpoints
+
+**Endpoint:** `/antigravity/v1/messages`
+**Authentication:** `x-api-key: your_api_password`
+
+**Request Example:**
+```bash
+curl -X POST "http://127.0.0.1:7861/antigravity/v1/messages" \
+  -H "x-api-key: your_api_password" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello"}
+    ]
+  }'
+```
+
+**Supported Antigravity Models:**
+- Claude series: `claude-sonnet-4-5`, `claude-opus-4-5`, etc.
+- Gemini series: `gemini-2.5-flash`, `gemini-2.5-pro`, etc.
+- Automatically supports thinking models
+
+**Gemini Native Example:**
+```python
+from io import BytesIO
+from PIL import Image
+from google.genai import Client
+from google.genai.types import HttpOptions
+from google.genai import types
+# The client gets the API key from the environment variable `GEMINI_API_KEY`.
+
+client = Client(
+            api_key="pwd",
+            http_options=HttpOptions(base_url="http://127.0.0.1:7861"),
+        )
+
+prompt = (
+    """
+    Draw a cat
+    """
+)
+
+response = client.models.generate_content(
+    model="gemini-2.5-flash-image",
+    contents=[prompt],
+    config=types.GenerateContentConfig(
+        image_config=types.ImageConfig(
+            aspect_ratio="16:9",
+        )
+    )
+)
+for part in response.candidates[0].content.parts:
+    if part.text is not None:
+        print(part.text)
+    elif part.inline_data is not None:
+        image = Image.open(BytesIO(part.inline_data.data))
+        image.save("generated_image.png")
+
+```
+
 **Notes:**
 - OpenAI endpoints return OpenAI-compatible format
 - Gemini endpoints return Gemini native format
-- Both endpoints use the same API password
+- Claude endpoints return Claude-compatible format
+- All endpoints use the same API password
 
 ## 📋 Complete API Reference
 
@@ -708,19 +836,31 @@ curl -X POST "http://127.0.0.1:7861/v1/models/gemini-2.5-pro:streamGenerateConte
 
 **Authentication Endpoints**
 - `POST /auth/login` - User login
-- `POST /auth/start` - Start OAuth authentication
+- `POST /auth/start` - Start GCLI OAuth authentication
+- `POST /auth/antigravity/start` - Start Antigravity OAuth authentication
 - `POST /auth/callback` - Handle OAuth callback
 - `GET /auth/status/{project_id}` - Check authentication status
+- `GET /auth/antigravity/credentials` - Get Antigravity credentials
 
-**Credential Management Endpoints**
-- `GET /creds/status` - Get all credential statuses
-- `POST /creds/action` - Single credential operation (enable/disable/delete)
-- `POST /creds/batch-action` - Batch credential operations
-- `POST /auth/upload` - Batch upload credential files (supports ZIP)
-- `GET /creds/download/{filename}` - Download credential file
-- `GET /creds/download-all` - Package download all credentials
-- `POST /creds/fetch-email/{filename}` - Get user email
-- `POST /creds/refresh-all-emails` - Batch refresh user emails
+**GCLI Credential Management Endpoints**
+- `GET /creds/status` - Get all GCLI credential statuses
+- `POST /creds/action` - Single GCLI credential operation (enable/disable/delete)
+- `POST /creds/batch-action` - Batch GCLI credential operations
+- `POST /auth/upload` - Batch upload GCLI credential files (supports ZIP)
+- `GET /creds/download/{filename}` - Download GCLI credential file
+- `GET /creds/download-all` - Package download all GCLI credentials
+- `POST /creds/fetch-email/{filename}` - Get GCLI user email
+- `POST /creds/refresh-all-emails` - Batch refresh GCLI user emails
+
+**Antigravity Credential Management Endpoints**
+- `GET /antigravity/creds/status` - Get all Antigravity credential statuses
+- `POST /antigravity/creds/action` - Single Antigravity credential operation (enable/disable/delete)
+- `POST /antigravity/creds/batch-action` - Batch Antigravity credential operations
+- `POST /antigravity/auth/upload` - Batch upload Antigravity credential files (supports ZIP)
+- `GET /antigravity/creds/download/{filename}` - Download Antigravity credential file
+- `GET /antigravity/creds/download-all` - Package download all Antigravity credentials
+- `POST /antigravity/creds/fetch-email/{filename}` - Get Antigravity user email
+- `POST /antigravity/creds/refresh-all-emails` - Batch refresh Antigravity user emails
 
 **Configuration Management Endpoints**
 - `GET /config/get` - Get current configuration
@@ -805,14 +945,6 @@ Response will include separated thinking content:
 export COMPATIBILITY_MODE=true
 ```
 In this mode, all `system` messages are converted to `user` messages, improving compatibility with certain clients.
-
----
-
-## Support the Project
-
-If this project has been helpful to you, we welcome your support for the project's continued development!
-
-For detailed donation information, please see: [📖 Donation Documentation](DONATE.md)
 
 ---
 

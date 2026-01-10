@@ -3,6 +3,7 @@ Anti-Truncation Module - Ensures complete streaming output
 保持一个流式请求内完整输出的反截断模块
 """
 
+import io
 import json
 import re
 from typing import Any, AsyncGenerator, Dict, List, Tuple
@@ -13,7 +14,6 @@ from log import log
 
 # 反截断配置
 DONE_MARKER = "[done]"
-MAX_CONTINUATION_ATTEMPTS = 3
 CONTINUATION_PROMPT = f"""请从刚才被截断的地方继续输出剩余的所有内容。
 
 重要提醒：
@@ -188,14 +188,28 @@ class AntiTruncationStreamProcessor:
         self,
         original_request_func,
         payload: Dict[str, Any],
-        max_attempts: int = MAX_CONTINUATION_ATTEMPTS,
+        max_attempts: int = 3,
     ):
         self.original_request_func = original_request_func
         self.base_payload = payload.copy()
         self.max_attempts = max_attempts
-        # 直接用字符串，避免列表+join的双重内存占用
-        self.collected_content = ""
+        # 使用 StringIO 避免字符串拼接的内存问题
+        self.collected_content = io.StringIO()
         self.current_attempt = 0
+
+    def _get_collected_text(self) -> str:
+        """获取收集的文本内容"""
+        return self.collected_content.getvalue()
+
+    def _append_content(self, content: str):
+        """追加内容到收集器"""
+        if content:
+            self.collected_content.write(content)
+
+    def _clear_content(self):
+        """清空收集的内容，释放内存"""
+        self.collected_content.close()
+        self.collected_content = io.StringIO()
 
     async def process_stream(self) -> AsyncGenerator[bytes, None]:
         """处理流式响应，检测并处理截断"""
@@ -217,98 +231,109 @@ class AntiTruncationStreamProcessor:
                     yield await self._handle_non_streaming_response(response)
                     return
 
-                # 处理流式响应
-                chunk_content = ""
+                # 处理流式响应（按行处理）
+                chunk_buffer = io.StringIO()  # 使用 StringIO 缓存当前轮次的chunk
                 found_done_marker = False
 
-                async for chunk in response.body_iterator:
-                    if not chunk:
-                        yield chunk
+                async for line in response.body_iterator:
+                    if not line:
+                        yield line
                         continue
 
-                    # 处理不同数据类型的startswith问题
-                    if isinstance(chunk, bytes):
-                        if not chunk.startswith(b"data: "):
-                            yield chunk
-                            continue
-                        payload_data = chunk[len(b"data: ") :]
+                    # 处理 bytes 类型的流式数据
+                    if isinstance(line, bytes):
+                        # 解码 bytes 为字符串
+                        line_str = line.decode('utf-8', errors='ignore').strip()
                     else:
-                        chunk_str = str(chunk)
-                        if not chunk_str.startswith("data: "):
-                            yield chunk
-                            continue
-                        payload_data = chunk_str[len("data: ") :].encode()
+                        line_str = str(line).strip()
 
-                    # 解析chunk内容
-
-                    if payload_data.strip() == b"[DONE]":
-                        # 检查是否找到了done标记
-                        if found_done_marker:
-                            log.info("Anti-truncation: Found [done] marker, output complete")
-                            yield chunk
-                            return
-                        else:
-                            log.warning("Anti-truncation: Stream ended without [done] marker")
-                            # 不发送[DONE]，准备继续
-                            break
-
-                    try:
-                        data = json.loads(payload_data.decode())
-                        content = self._extract_content_from_chunk(data)
-
-                        if content:
-                            chunk_content += content
-
-                            # 检查是否包含done标记
-                            if self._check_done_marker_in_chunk_content(content):
-                                found_done_marker = True
-                                log.info("Anti-truncation: Found [done] marker in chunk")
-
-                        # 清理chunk中的[done]标记后再发送
-                        cleaned_chunk = self._remove_done_marker_from_chunk(chunk, data)
-                        yield cleaned_chunk
-
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        yield chunk
+                    # 跳过空行
+                    if not line_str:
+                        yield line
                         continue
 
-                # 更新收集的内容 - 直接拼接，避免中间数据结构
-                if chunk_content:
-                    self.collected_content += chunk_content
+                    # 处理 SSE 格式的数据行
+                    if line_str.startswith("data: "):
+                        payload_str = line_str[6:]  # 去掉 "data: " 前缀
+
+                        # 检查是否是 [DONE] 标记
+                        if payload_str.strip() == "[DONE]":
+                            if found_done_marker:
+                                log.info("Anti-truncation: Found [done] marker, output complete")
+                                yield line
+                                # 清理内存
+                                chunk_buffer.close()
+                                self._clear_content()
+                                return
+                            else:
+                                log.warning("Anti-truncation: Stream ended without [done] marker")
+                                # 不发送[DONE]，准备继续
+                                break
+
+                        # 尝试解析 JSON 数据
+                        try:
+                            data = json.loads(payload_str)
+                            content = self._extract_content_from_chunk(data)
+
+                            log.debug(f"Anti-truncation: Extracted content: {repr(content[:100] if content else '')}")
+
+                            if content:
+                                chunk_buffer.write(content)
+
+                                # 检查是否包含done标记
+                                has_marker = self._check_done_marker_in_chunk_content(content)
+                                log.debug(f"Anti-truncation: Check done marker result: {has_marker}, DONE_MARKER='{DONE_MARKER}'")
+                                if has_marker:
+                                    found_done_marker = True
+                                    log.info(f"Anti-truncation: Found [done] marker in chunk, content: {content[:200]}")
+
+                            # 清理行中的[done]标记后再发送
+                            cleaned_line = self._remove_done_marker_from_line(line, line_str, data)
+                            yield cleaned_line
+
+                        except (json.JSONDecodeError, ValueError):
+                            # 无法解析的行，直接传递
+                            yield line
+                            continue
+                    else:
+                        # 非 data: 开头的行，直接传递
+                        yield line
+
+                # 更新收集的内容 - 使用 StringIO 高效处理
+                chunk_text = chunk_buffer.getvalue()
+                if chunk_text:
+                    self._append_content(chunk_text)
+                chunk_buffer.close()
+
+                log.debug(f"Anti-truncation: After processing stream, found_done_marker={found_done_marker}")
 
                 # 如果找到了done标记，结束
                 if found_done_marker:
                     # 立即清理内容释放内存
-                    self.collected_content = ""
+                    self._clear_content()
                     yield b"data: [DONE]\n\n"
                     return
 
                 # 只有在单个chunk中没有找到done标记时，才检查累积内容（防止done标记跨chunk出现）
                 if not found_done_marker:
-                    accumulated_text = (
-                        "".join(self.collected_content) if self.collected_content else ""
-                    )
+                    accumulated_text = self._get_collected_text()
                     if self._check_done_marker_in_text(accumulated_text):
                         log.info("Anti-truncation: Found [done] marker in accumulated content")
                         # 立即清理内容释放内存
-                        self.collected_content = ""
+                        self._clear_content()
                         yield b"data: [DONE]\n\n"
                         return
 
                 # 如果没找到done标记且不是最后一次尝试，准备续传
                 if self.current_attempt < self.max_attempts:
-                    total_length = (
-                        sum(len(chunk) for chunk in self.collected_content)
-                        if self.collected_content
-                        else 0
-                    )
+                    accumulated_text = self._get_collected_text()
+                    total_length = len(accumulated_text)
                     log.info(
                         f"Anti-truncation: No [done] marker found in output (length: {total_length}), preparing continuation (attempt {self.current_attempt + 1})"
                     )
-                    if self.collected_content and total_length > 100:
-                        last_chunk = self.collected_content[-1] if self.collected_content else ""
+                    if total_length > 100:
                         log.debug(
-                            f"Anti-truncation: Current collected content ends with: {'...' + last_chunk[-100:]}"
+                            f"Anti-truncation: Current collected content ends with: ...{accumulated_text[-100:]}"
                         )
                     # 在下一次循环中会继续
                     continue
@@ -316,7 +341,7 @@ class AntiTruncationStreamProcessor:
                     # 最后一次尝试，直接结束
                     log.warning("Anti-truncation: Max attempts reached, ending stream")
                     # 立即清理内容释放内存
-                    self.collected_content = ""
+                    self._clear_content()
                     yield b"data: [DONE]\n\n"
                     return
 
@@ -339,7 +364,7 @@ class AntiTruncationStreamProcessor:
         # 如果所有尝试都失败了
         log.error("Anti-truncation: All attempts failed")
         # 清理内存
-        self.collected_content = ""
+        self._clear_content()
         yield b"data: [DONE]\n\n"
 
     def _build_current_payload(self) -> Dict[str, Any]:
@@ -357,15 +382,13 @@ class AntiTruncationStreamProcessor:
         new_contents = contents.copy()
 
         # 如果有收集到的内容，添加到对话中
-        # 只拼接一次，复用结果，避免重复拼接导致内存峰值
-        accumulated_text = ""
-        if self.collected_content:
-            accumulated_text = self.collected_content
+        accumulated_text = self._get_collected_text()
+        if accumulated_text:
             new_contents.append({"role": "model", "parts": [{"text": accumulated_text}]})
 
         # 构建具体的续写指令，包含前面的内容摘要
         content_summary = ""
-        if accumulated_text:  # 复用已拼接的字符串
+        if accumulated_text:
             if len(accumulated_text) > 200:
                 content_summary = f'\n\n前面你已经输出了约 {len(accumulated_text)} 个字符的内容，结尾是：\n"...{accumulated_text[-100:]}"'
             else:
@@ -386,7 +409,7 @@ class AntiTruncationStreamProcessor:
         """从chunk数据中提取文本内容"""
         content = ""
 
-        # 处理Gemini格式
+        # 处理 Gemini 格式
         if "candidates" in data:
             for candidate in data["candidates"]:
                 if "content" in candidate:
@@ -394,61 +417,100 @@ class AntiTruncationStreamProcessor:
                     for part in parts:
                         if "text" in part:
                             content += part["text"]
-
-        # 处理OpenAI格式
+        
+        # 处理 OpenAI 流式格式（choices/delta）
         elif "choices" in data:
             for choice in data["choices"]:
                 if "delta" in choice and "content" in choice["delta"]:
-                    content += choice["delta"]["content"]
-                elif "message" in choice and "content" in choice["message"]:
-                    content += choice["message"]["content"]
+                    delta_content = choice["delta"]["content"]
+                    if delta_content:
+                        content += delta_content
 
         return content
 
     async def _handle_non_streaming_response(self, response) -> bytes:
-        """处理非流式响应"""
-        try:
-            if hasattr(response, "body"):
-                content = (
-                    response.body.decode() if isinstance(response.body, bytes) else response.body
-                )
-            elif hasattr(response, "content"):
-                content = (
-                    response.content.decode()
-                    if isinstance(response.content, bytes)
-                    else response.content
-                )
-            else:
-                content = str(response)
+        """处理非流式响应 - 使用循环代替递归避免栈溢出"""
+        # 使用循环代替递归
+        while True:
+            try:
+                # 特殊处理：如果返回的是StreamingResponse，需要读取其body_iterator
+                if isinstance(response, StreamingResponse):
+                    log.error("Anti-truncation: Received StreamingResponse in non-streaming handler - this should not happen")
+                    # 尝试读取流式响应的内容
+                    chunks = []
+                    async for chunk in response.body_iterator:
+                        chunks.append(chunk)
+                    content = b"".join(chunks).decode() if chunks else ""
+                # 提取响应内容
+                elif hasattr(response, "body"):
+                    content = (
+                        response.body.decode() if isinstance(response.body, bytes) else response.body
+                    )
+                elif hasattr(response, "content"):
+                    content = (
+                        response.content.decode()
+                        if isinstance(response.content, bytes)
+                        else response.content
+                    )
+                else:
+                    log.error(f"Anti-truncation: Unknown response type: {type(response)}")
+                    content = str(response)
 
-            response_data = json.loads(content)
+                # 验证内容不为空
+                if not content or not content.strip():
+                    log.error("Anti-truncation: Received empty response content")
+                    return json.dumps(
+                        {
+                            "error": {
+                                "message": "Empty response from server",
+                                "type": "api_error",
+                                "code": 500,
+                            }
+                        }
+                    ).encode()
 
-            # 检查是否包含done标记
-            text_content = self._extract_content_from_response(response_data)
-            has_done_marker = self._check_done_marker_in_text(text_content)
+                # 尝试解析 JSON
+                try:
+                    response_data = json.loads(content)
+                except json.JSONDecodeError as json_err:
+                    log.error(f"Anti-truncation: Failed to parse JSON response: {json_err}, content: {content[:200]}")
+                    # 如果不是 JSON，直接返回原始内容
+                    return content.encode() if isinstance(content, str) else content
 
-            if not has_done_marker and self.current_attempt < self.max_attempts:
-                log.info("Anti-truncation: Non-streaming response needs continuation")
+                # 检查是否包含done标记
+                text_content = self._extract_content_from_response(response_data)
+                has_done_marker = self._check_done_marker_in_text(text_content)
+
+                if has_done_marker or self.current_attempt >= self.max_attempts:
+                    # 找到done标记或达到最大尝试次数，返回结果
+                    return content.encode() if isinstance(content, str) else content
+
+                # 需要继续，收集内容并构建下一个请求
                 if text_content:
-                    self.collected_content += text_content
-                # 递归处理续传
-                return await self._handle_non_streaming_response(
-                    await self.original_request_func(self._build_current_payload())
-                )
+                    self._append_content(text_content)
 
-            return content.encode()
+                log.info("Anti-truncation: Non-streaming response needs continuation")
 
-        except Exception as e:
-            log.error(f"Anti-truncation non-streaming error: {str(e)}")
-            return json.dumps(
-                {
-                    "error": {
-                        "message": f"Anti-truncation failed: {str(e)}",
-                        "type": "api_error",
-                        "code": 500,
+                # 增加尝试次数
+                self.current_attempt += 1
+
+                # 构建续传payload并发送下一个请求
+                next_payload = self._build_current_payload()
+                response = await self.original_request_func(next_payload)
+
+                # 继续循环处理下一个响应
+
+            except Exception as e:
+                log.error(f"Anti-truncation non-streaming error: {str(e)}")
+                return json.dumps(
+                    {
+                        "error": {
+                            "message": f"Anti-truncation failed: {str(e)}",
+                            "type": "api_error",
+                            "code": 500,
+                        }
                     }
-                }
-            ).encode()
+                ).encode()
 
     def _check_done_marker_in_text(self, text: str) -> bool:
         """检测文本中是否包含DONE_MARKER（只检测指定标记）"""
@@ -483,15 +545,12 @@ class AntiTruncationStreamProcessor:
 
         return content
 
-    def _remove_done_marker_from_chunk(self, chunk: bytes, data: Dict[str, Any]) -> bytes:
-        """使用正则表达式从chunk中移除[done]标记"""
+    def _remove_done_marker_from_line(self, line: bytes, line_str: str, data: Dict[str, Any]) -> bytes:
+        """从行中移除[done]标记"""
         try:
-            # 首先检查是否真的包含[done]标记，如果没有则直接返回原始chunk
-            chunk_text = (
-                chunk.decode("utf-8", errors="ignore") if isinstance(chunk, bytes) else str(chunk)
-            )
-            if "[done]" not in chunk_text.lower():
-                return chunk  # 没有[done]标记，直接返回原始chunk
+            # 首先检查是否真的包含[done]标记
+            if "[done]" not in line_str.lower():
+                return line  # 没有[done]标记，直接返回原始行
 
             # 编译正则表达式，匹配[done]标记（忽略大小写，包括可能的空白字符）
             done_pattern = re.compile(r"\s*\[done\]\s*", re.IGNORECASE)
@@ -523,16 +582,9 @@ class AntiTruncationStreamProcessor:
                         modified_candidate["content"] = modified_content
                     modified_data["candidates"].append(modified_candidate)
 
-                # 重新编码为chunk格式，保持原始的换行符
-                if isinstance(chunk, bytes):
-                    prefix = b"data: "
-                    suffix = b"\n\n"  # 确保有正确的换行符
-                    json_data = json.dumps(
-                        modified_data, separators=(",", ":"), ensure_ascii=False
-                    ).encode("utf-8")
-                    return prefix + json_data + suffix
-                else:
-                    return f"data: {json.dumps(modified_data, separators=(',', ':'), ensure_ascii=False)}\n\n"
+                # 重新编码为行格式 - SSE格式需要两个换行符
+                json_str = json.dumps(modified_data, separators=(",", ":"), ensure_ascii=False)
+                return f"data: {json_str}\n\n".encode("utf-8")
 
             # 处理OpenAI格式
             elif "choices" in data:
@@ -547,33 +599,24 @@ class AntiTruncationStreamProcessor:
                         modified_choice["delta"] = modified_delta
                     elif "message" in choice and "content" in choice["message"]:
                         modified_message = choice["message"].copy()
-                        modified_message["content"] = done_pattern.sub(
-                            "", choice["message"]["content"]
-                        )
+                        modified_message["content"] = done_pattern.sub("", choice["message"]["content"])
                         modified_choice["message"] = modified_message
                     modified_data["choices"].append(modified_choice)
 
-                # 重新编码为chunk格式，保持原始的换行符
-                if isinstance(chunk, bytes):
-                    prefix = b"data: "
-                    suffix = b"\n\n"  # 确保有正确的换行符
-                    json_data = json.dumps(
-                        modified_data, separators=(",", ":"), ensure_ascii=False
-                    ).encode("utf-8")
-                    return prefix + json_data + suffix
-                else:
-                    return f"data: {json.dumps(modified_data, separators=(',', ':'), ensure_ascii=False)}\n\n"
+                # 重新编码为行格式 - SSE格式需要两个换行符
+                json_str = json.dumps(modified_data, separators=(",", ":"), ensure_ascii=False)
+                return f"data: {json_str}\n\n".encode("utf-8")
 
-            # 如果没有找到支持的格式，返回原始chunk
-            return chunk
+            # 如果没有找到支持的格式，返回原始行
+            return line
 
         except Exception as e:
-            log.warning(f"Failed to remove [done] marker from chunk: {str(e)}")
-            return chunk
+            log.warning(f"Failed to remove [done] marker from line: {str(e)}")
+            return line
 
 
 async def apply_anti_truncation_to_stream(
-    request_func, payload: Dict[str, Any], max_attempts: int = MAX_CONTINUATION_ATTEMPTS
+    request_func, payload: Dict[str, Any], max_attempts: int = 3
 ) -> StreamingResponse:
     """
     对流式请求应用反截断处理
